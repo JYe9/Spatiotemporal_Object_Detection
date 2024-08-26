@@ -7,6 +7,32 @@
 
 <br>
 
+To run:
+
+Step 1: Download dataset and make sure information in model/data/stvd.yaml is correct
+
+Step 2: Ensure conda environment (in environment.yml) is created and activated.
+
+Step 3: All models have the the following line in their train.py script:
+
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+
+Change to choose which gpu device to use accordingly, or comment out for cpu training.
+
+Step 4: To begin training model in ./models/yolov5s-spatiotemporal.yaml
+
+Run:
+
+python train.py --img <img_size> --batch <batch_size> --epochs <epochs> --data ./data/data.yaml --weights <path_to_weights> OR <''> (scratch) --cfg ./models/yolov5s-spatiotemporal.yaml --cache --device <gpu_device_number>
+
+NOTE: environment should also have weights and biases installed to log training results to your weights and biases account. You can add the following arguments to the training script:
+
+--name <name_of_run> --save-period <weights_checkpoint_save>
+
+If you do not want to log to weights and biases -> pip uninstall wandb or wandb disabled
+
+<br>
+
 YOLOv5 🚀 is the world's most loved vision AI, representing <a href="https://ultralytics.com">Ultralytics</a> open-source research into future vision AI methods, incorporating lessons learned and best practices evolved over thousands of hours of research and development.
 
 We hope that the resources here will help you get the most out of YOLOv5. Please browse the YOLOv5 <a href="https://docs.ultralytics.com/yolov5">Docs</a> for details, raise an issue on <a href="https://github.com/ultralytics/yolov5/issues/new/choose">GitHub</a> for support, and join our <a href="https://ultralytics.com/discord">Discord</a> community for questions and discussions!
