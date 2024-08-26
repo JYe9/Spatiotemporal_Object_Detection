@@ -1,5 +1,7 @@
 # Spatiotemporal Object Detection for Improved Aerial Vehicle Detection in Traffic Monitoring
 
+Kristina Telegraph, (Christos Kyrkou)[https://www.christoskyrkou.com/]
+
 🚧 Under Construction
 
 - Dataset on [Zenodo]()
