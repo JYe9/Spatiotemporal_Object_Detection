@@ -2,7 +2,6 @@
 
 🚧 Under Construction
 
-- Code
 - Dataset on [Zenodo]()
 - Codebase based on YOLOv5
 
