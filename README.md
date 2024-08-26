@@ -4,7 +4,7 @@ Kristina Telegraph, [Christos Kyrkou](https://www.christoskyrkou.com/)
 
 🚧 Under Construction
 
-- Dataset on [Zenodo]()
+- Dataset on [Zenodo](https://zenodo.org/records/11468690)
 - Codebase based on YOLOv5
 
 <br>
