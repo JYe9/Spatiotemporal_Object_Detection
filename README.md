@@ -13,9 +13,9 @@ To run:
 
 Step 1: Download dataset and make sure information in model/data/stvd.yaml is correct
 
-Step 2: Ensure conda environment (in environment.yml) is created and activated.
+Step 2: Ensure the desired environment is set up with Python>=3.8.0 and all yolov5 requirements are installed including PyTorch>=1.8.
 
-Step 3: All models have the the following line in their train.py script:
+Step 3: A spatiotemporal model yaml for the YOLOv5s variant exists in ./models/yolov5s-spatiotemporal.yaml. Spatiotemporal models with other variants can be constructed by similarly adding the "ch: 7" argument to the respective model yaml of the desired variant.
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
