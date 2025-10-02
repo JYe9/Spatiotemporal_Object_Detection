@@ -22,12 +22,11 @@ from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 
-import torch
 import torch.distributed as dist
 import torch.hub as hub
 import torch.optim.lr_scheduler as lr_scheduler
 import torchvision
-from torch.cuda import amp
+import torch
 from tqdm import tqdm
 
 FILE = Path(__file__).resolve()
@@ -219,7 +218,7 @@ def train(opt, device):
             images, labels = images.to(device, non_blocking=True), labels.to(device)
 
             # Forward
-            with amp.autocast(enabled=cuda):  # stability issues when enabled
+            with torch.amp.autocast('cuda', enabled=cuda):  # stability issues when enabled
                 loss = criterion(model(images), labels)
 
             # Backward

@@ -1,6 +1,6 @@
 
-train: /content/dataset/train/images
-val: /content/dataset/val/images
+train: /home/jye00001/fsdata/datasets/STVD/train/images
+val: /home/jye00001/fsdata/datasets/STVD/val/images
 
 
 nc: 3
