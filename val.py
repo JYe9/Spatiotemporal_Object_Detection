@@ -1,6 +1,6 @@
 # Ultralytics YOLOv5 🚀, AGPL-3.0 license
 """
-Validate a trained YOLOv5 detection model on a detection dataset.
+Validate a trained YOLOv5 spatiotemporal detection model on multi-frame image sequences.
 
 Usage:
     $ python val.py --weights yolov5s.pt --data coco128.yaml --img 640
@@ -38,7 +38,7 @@ ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
 
 from models.common import DetectMultiBackend
 from utils.callbacks import Callbacks
-from utils.dataloaders import create_dataloader
+from utils.dataloaders import SPATIOTEMPORAL_CHANNELS, create_dataloader
 from utils.general import (
     LOGGER,
     TQDM_BAR_FORMAT,
@@ -277,7 +277,9 @@ def run(
             device = model.device
             if not (pt or jit):
                 batch_size = 1  # export.py models default to batch-size 1
-                LOGGER.info(f"Forcing --batch-size 1 square inference (1,3,{imgsz},{imgsz}) for non-PyTorch models")
+                LOGGER.info(
+                    f"Forcing --batch-size 1 square inference (1,{SPATIOTEMPORAL_CHANNELS},{imgsz},{imgsz}) for non-PyTorch models"
+                )
 
         # Data
         data = check_dataset(data)  # check
@@ -298,7 +300,7 @@ def run(
                 f"{weights} ({ncm} classes) trained on different --data than what you passed ({nc} "
                 f"classes). Pass correct combination of --weights and --data that are trained together."
             )
-        model.warmup(imgsz=(1 if pt else batch_size, 7, imgsz, imgsz))  # warmup  # 7 channels - Frame Pair & Difference
+        model.warmup(imgsz=(1 if pt else batch_size, SPATIOTEMPORAL_CHANNELS, imgsz, imgsz))
         pad, rect = (0.0, False) if task == "speed" else (0.5, pt)  # square inference for benchmarks
         task = task if task in ("train", "val", "test") else "val"  # path to train/val/test images
         dataloader = create_dataloader(
@@ -420,7 +422,7 @@ def run(
     # Print speeds
     t = tuple(x.t / seen * 1e3 for x in dt)  # speeds per image
     if not training:
-        shape = (batch_size, 3, imgsz, imgsz)
+        shape = (batch_size, SPATIOTEMPORAL_CHANNELS, imgsz, imgsz)
         LOGGER.info(f"Speed: %.1fms pre-process, %.1fms inference, %.1fms NMS per image at shape {shape}" % t)
 
     # Plots
@@ -515,15 +517,21 @@ def parse_opt():
         Additional options include saving results in different formats, selecting devices, and more.
     """
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data", type=str, default=ROOT / "data/coco128.yaml", help="dataset.yaml path")
-    parser.add_argument("--weights", nargs="+", type=str, default=ROOT / "yolov5s.pt", help="model path(s)")
-    parser.add_argument("--batch-size", type=int, default=32, help="batch size")
+    parser.add_argument("--data", type=str, default=ROOT / "data/stvd.yaml", help="dataset.yaml path")
+    parser.add_argument(
+        "--weights",
+        nargs="+",
+        type=str,
+        default=ROOT / "runs/train/exp3/weights/best.pt",
+        help="model path(s)",
+    )
+    parser.add_argument("--batch-size", type=int, default=16, help="batch size")
     parser.add_argument("--imgsz", "--img", "--img-size", type=int, default=640, help="inference size (pixels)")
     parser.add_argument("--conf-thres", type=float, default=0.001, help="confidence threshold")
     parser.add_argument("--iou-thres", type=float, default=0.6, help="NMS IoU threshold")
     parser.add_argument("--max-det", type=int, default=300, help="maximum detections per image")
     parser.add_argument("--task", default="val", help="train, val, test, speed or study")
-    parser.add_argument("--device", default="", help="cuda device, i.e. 0 or 0,1,2,3 or cpu")
+    parser.add_argument("--device", default="0", help="cuda device, i.e. 0 or 0,1,2,3 or cpu")
     parser.add_argument("--workers", type=int, default=8, help="max dataloader workers (per RANK in DDP mode)")
     parser.add_argument("--single-cls", action="store_true", help="treat as single-class dataset")
     parser.add_argument("--augment", action="store_true", help="augmented inference")

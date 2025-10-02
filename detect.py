@@ -1,18 +1,12 @@
 # Ultralytics YOLOv5 🚀, AGPL-3.0 license
 """
-Run YOLOv5 detection inference on images, videos, directories, globs, YouTube, webcam, streams, etc.
+Run YOLOv5 detection inference on image sequences for spatiotemporal inputs.
 
 Usage - sources:
-    $ python detect.py --weights yolov5s.pt --source 0                               # webcam
-                                                     img.jpg                         # image
-                                                     vid.mp4                         # video
-                                                     screen                          # screenshot
-                                                     path/                           # directory
-                                                     list.txt                        # list of images
-                                                     list.streams                    # list of streams
-                                                     'path/*.jpg'                    # glob
-                                                     'https://youtu.be/LNwODJXcvt4'  # YouTube
-                                                     'rtsp://example.com/media.mp4'  # RTSP, RTMP, HTTP stream
+    $ python detect.py --weights yolov5s.pt --source img.jpg           # image
+                                                     path/             # directory
+                                                     list.txt          # list of images
+                                                     'path/*.jpg'      # glob
 
 Usage - formats:
     $ python detect.py --weights yolov5s.pt                 # PyTorch
@@ -46,7 +40,7 @@ ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
 from ultralytics.utils.plotting import Annotator, colors, save_one_box
 
 from models.common import DetectMultiBackend
-from utils.dataloaders import IMG_FORMATS, VID_FORMATS, LoadImages, LoadScreenshots, LoadStreams
+from utils.dataloaders import IMG_FORMATS, SPATIOTEMPORAL_CHANNELS, LoadImages, LoadScreenshots
 from utils.general import (
     LOGGER,
     Profile,
@@ -69,7 +63,7 @@ from utils.torch_utils import select_device, smart_inference_mode
 @smart_inference_mode()
 def run(
     weights=ROOT / "yolov5s.pt",  # model path or triton URL
-    source=ROOT / "data/images",  # file/dir/URL/glob/screen/0(webcam)
+    source=ROOT / "data/images",  # file/dir/glob/list of images
     data=ROOT / "data/coco128.yaml",  # dataset.yaml path
     imgsz=(640, 640),  # inference size (height, width)
     conf_thres=0.25,  # confidence threshold
@@ -81,7 +75,7 @@ def run(
     save_csv=False,  # save results in CSV format
     save_conf=False,  # save confidences in --save-txt labels
     save_crop=False,  # save cropped prediction boxes
-    nosave=False,  # do not save images/videos
+    nosave=False,  # do not save images
     classes=None,  # filter by class: --class 0, or --class 0 2 3
     agnostic_nms=False,  # class-agnostic NMS
     augment=False,  # augmented inference
@@ -98,11 +92,11 @@ def run(
     vid_stride=1,  # video frame-rate stride
 ):
     """
-    Runs YOLOv5 detection inference on various sources like images, videos, directories, streams, etc.
+    Runs YOLOv5 detection inference on image sources for spatiotemporal sequences.
 
     Args:
         weights (str | Path): Path to the model weights file or a Triton URL. Default is 'yolov5s.pt'.
-        source (str | Path): Input source, which can be a file, directory, URL, glob pattern, screen capture, or webcam
+        source (str | Path): Input source, which can be a file, directory, glob pattern, list.txt, or image URL.
             index. Default is 'data/images'.
         data (str | Path): Path to the dataset YAML file. Default is 'data/coco128.yaml'.
         imgsz (tuple[int, int]): Inference image size as a tuple (height, width). Default is (640, 640).
@@ -116,7 +110,7 @@ def run(
         save_csv (bool): If True, save results in a CSV file. Default is False.
         save_conf (bool): If True, include confidence scores in the saved results. Default is False.
         save_crop (bool): If True, save cropped prediction boxes. Default is False.
-        nosave (bool): If True, do not save inference images or videos. Default is False.
+        nosave (bool): If True, do not save inference images. Default is False.
         classes (list[int]): List of class indices to filter detections by. Default is None.
         agnostic_nms (bool): If True, perform class-agnostic non-max suppression. Default is False.
         augment (bool): If True, use augmented inference. Default is False.
@@ -144,14 +138,14 @@ def run(
         run(source='data/images/example.jpg', weights='yolov5s.pt', device='0')
 
         # Run inference on a video with specific confidence threshold
-        run(source='data/videos/example.mp4', weights='yolov5s.pt', conf_thres=0.4, device='0')
+        run(source='data/images/example.jpg', weights='yolov5s.pt', conf_thres=0.4, device='0')
         ```
     """
     source = str(source)
-    save_img = not nosave and not source.endswith(".txt")  # save inference images
-    is_file = Path(source).suffix[1:] in (IMG_FORMATS + VID_FORMATS)
-    is_url = source.lower().startswith(("rtsp://", "rtmp://", "http://", "https://"))
-    webcam = source.isnumeric() or source.endswith(".streams") or (is_url and not is_file)
+    save_img = not nosave and not source.endswith('.txt')  # save inference images
+    is_file = Path(source).suffix[1:] in IMG_FORMATS
+    is_url = source.lower().startswith(('rtsp://', 'rtmp://', 'http://', 'https://'))
+    webcam = False
     screenshot = source.lower().startswith("screen")
     if is_url and is_file:
         source = check_file(source)  # download
@@ -168,18 +162,14 @@ def run(
 
     # Dataloader
     bs = 1  # batch_size
-    if webcam:
-        view_img = check_imshow(warn=True)
-        dataset = LoadStreams(source, img_size=imgsz, stride=stride, auto=pt, vid_stride=vid_stride)
-        bs = len(dataset)
-    elif screenshot:
+    if screenshot:
         dataset = LoadScreenshots(source, img_size=imgsz, stride=stride, auto=pt)
     else:
         dataset = LoadImages(source, img_size=imgsz, stride=stride, auto=pt, vid_stride=vid_stride)
     vid_path, vid_writer = [None] * bs, [None] * bs
 
     # Run inference
-    model.warmup(imgsz=(1 if pt or model.triton else bs, 7, *imgsz))  # warmup  # 7 channels - Frame Pair & Difference
+    model.warmup(imgsz=(1 if pt or model.triton else bs, SPATIOTEMPORAL_CHANNELS, *imgsz))
     seen, windows, dt = 0, [], (Profile(device=device), Profile(device=device), Profile(device=device))
     for path, im, im0s, vid_cap, s in dataset:
         with dt[0]:
@@ -227,11 +217,7 @@ def run(
         # Process predictions
         for i, det in enumerate(pred):  # per image
             seen += 1
-            if webcam:  # batch_size >= 1
-                p, im0, frame = path[i], im0s[i].copy(), dataset.count
-                s += f"{i}: "
-            else:
-                p, im0, frame = path, im0s.copy(), getattr(dataset, "frame", 0)
+            p, im0, frame = path, im0s.copy(), getattr(dataset, "frame", 0)
 
             p = Path(p)  # to Path
             save_path = str(save_dir / p.name)  # im.jpg
@@ -297,7 +283,7 @@ def run(
                             h = int(vid_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                         else:  # stream
                             fps, w, h = 30, im0.shape[1], im0.shape[0]
-                        save_path = str(Path(save_path).with_suffix(".mp4"))  # force *.mp4 suffix on results videos
+                        save_path = str(Path(save_path).with_suffix(".jpg"))
                         vid_writer[i] = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
                     vid_writer[i].write(im0)
 
@@ -320,7 +306,7 @@ def parse_opt():
 
     Args:
         --weights (str | list[str], optional): Model path or Triton URL. Defaults to ROOT / 'yolov5s.pt'.
-        --source (str, optional): File/dir/URL/glob/screen/0(webcam). Defaults to ROOT / 'data/images'.
+        --source (str, optional): File/dir/glob/list of images. Defaults to ROOT / 'data/images'.
         --data (str, optional): Dataset YAML path. Provides dataset configuration information.
         --imgsz (list[int], optional): Inference size (height, width). Defaults to [640].
         --conf-thres (float, optional): Confidence threshold. Defaults to 0.25.
@@ -332,7 +318,7 @@ def parse_opt():
         --save-csv (bool, optional): Flag to save results in CSV format. Defaults to False.
         --save-conf (bool, optional): Flag to save confidences in labels saved via --save-txt. Defaults to False.
         --save-crop (bool, optional): Flag to save cropped prediction boxes. Defaults to False.
-        --nosave (bool, optional): Flag to prevent saving images/videos. Defaults to False.
+        --nosave (bool, optional): Flag to prevent saving images. Defaults to False.
         --classes (list[int], optional): List of classes to filter results by, e.g., '--classes 0 2 3'. Defaults to None.
         --agnostic-nms (bool, optional): Flag for class-agnostic NMS. Defaults to False.
         --augment (bool, optional): Flag for augmented inference. Defaults to False.
@@ -360,7 +346,7 @@ def parse_opt():
     """
     parser = argparse.ArgumentParser()
     parser.add_argument("--weights", nargs="+", type=str, default=ROOT / "yolov5s.pt", help="model path or triton URL")
-    parser.add_argument("--source", type=str, default=ROOT / "data/images", help="file/dir/URL/glob/screen/0(webcam)")
+    parser.add_argument("--source", type=str, default=ROOT / "data/images", help="file/dir/glob/list of images")
     parser.add_argument("--data", type=str, default=ROOT / "data/coco128.yaml", help="(optional) dataset.yaml path")
     parser.add_argument("--imgsz", "--img", "--img-size", nargs="+", type=int, default=[640], help="inference size h,w")
     parser.add_argument("--conf-thres", type=float, default=0.25, help="confidence threshold")
@@ -372,7 +358,7 @@ def parse_opt():
     parser.add_argument("--save-csv", action="store_true", help="save results in CSV format")
     parser.add_argument("--save-conf", action="store_true", help="save confidences in --save-txt labels")
     parser.add_argument("--save-crop", action="store_true", help="save cropped prediction boxes")
-    parser.add_argument("--nosave", action="store_true", help="do not save images/videos")
+    parser.add_argument("--nosave", action="store_true", help="do not save images")
     parser.add_argument("--classes", nargs="+", type=int, help="filter by class: --classes 0, or --classes 0 2 3")
     parser.add_argument("--agnostic-nms", action="store_true", help="class-agnostic NMS")
     parser.add_argument("--augment", action="store_true", help="augmented inference")

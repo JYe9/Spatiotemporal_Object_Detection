@@ -197,7 +197,7 @@ def train(opt, device):
     t0 = time.time()
     criterion = smartCrossEntropyLoss(label_smoothing=opt.label_smoothing)  # loss function
     best_fitness = 0.0
-    scaler = amp.GradScaler(enabled=cuda)
+    scaler = torch.amp.GradScaler('cuda', enabled=cuda)
     val = test_dir.stem  # 'val' or 'test'
     LOGGER.info(
         f'Image sizes {imgsz} train, {imgsz} test\n'

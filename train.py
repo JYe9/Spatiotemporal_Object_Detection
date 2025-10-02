@@ -50,7 +50,7 @@ from models.yolo import Model
 from utils.autoanchor import check_anchors
 from utils.autobatch import check_train_batch_size
 from utils.callbacks import Callbacks
-from utils.dataloaders import create_dataloader
+from utils.dataloaders import SPATIOTEMPORAL_CHANNELS, create_dataloader
 from utils.downloads import attempt_download, is_url
 from utils.general import (
     LOGGER,
@@ -213,14 +213,14 @@ def train(hyp, opt, device, callbacks):
         with torch_distributed_zero_first(LOCAL_RANK):
             weights = attempt_download(weights)  # download if not found locally
         ckpt = torch.load(weights, map_location="cpu", weights_only=False)  # load checkpoint to CPU to avoid CUDA memory leak
-        model = Model(cfg or ckpt["model"].yaml, ch=3, nc=nc, anchors=hyp.get("anchors")).to(device)  # create
+        model = Model(cfg or ckpt["model"].yaml, ch=SPATIOTEMPORAL_CHANNELS, nc=nc, anchors=hyp.get("anchors")).to(device)
         exclude = ["anchor"] if (cfg or hyp.get("anchors")) and not resume else []  # exclude keys
         csd = ckpt["model"].float().state_dict()  # checkpoint state_dict as FP32
         csd = intersect_dicts(csd, model.state_dict(), exclude=exclude)  # intersect
         model.load_state_dict(csd, strict=False)  # load
         LOGGER.info(f"Transferred {len(csd)}/{len(model.state_dict())} items from {weights}")  # report
     else:
-        model = Model(cfg, ch=3, nc=nc, anchors=hyp.get("anchors")).to(device)  # create
+        model = Model(cfg, ch=SPATIOTEMPORAL_CHANNELS, nc=nc, anchors=hyp.get("anchors")).to(device)
     amp = check_amp(model)  # check AMP
 
     # Freeze
@@ -354,7 +354,7 @@ def train(hyp, opt, device, callbacks):
     maps = np.zeros(nc)  # mAP per class
     results = (0, 0, 0, 0, 0, 0, 0)  # P, R, mAP@.5, mAP@.5-.95, val_loss(box, obj, cls)
     scheduler.last_epoch = start_epoch - 1  # do not move
-    scaler = torch.cuda.amp.GradScaler(enabled=amp)
+    scaler = torch.amp.GradScaler('cuda', enabled=amp)
     stopper, stop = EarlyStopping(patience=opt.patience), False
     compute_loss = ComputeLoss(model)  # init loss class
     callbacks.run("on_train_start")
@@ -567,7 +567,7 @@ def parse_opt(known=False):
     """
     parser = argparse.ArgumentParser()
     parser.add_argument("--weights", type=str, default=ROOT / "yolov5s.pt", help="initial weights path")
-    parser.add_argument("--cfg", type=str, default="models/yolov5s-spatiotemporal.yaml", help="model.yaml path")
+    parser.add_argument("--cfg", type=str, default="models/yolov5s-spatiotemporal-3frames.yaml", help="model.yaml path")
     parser.add_argument("--data", type=str, default=ROOT / "data/stvd.yaml", help="dataset.yaml path")
     parser.add_argument("--hyp", type=str, default=ROOT / "data/hyps/hyp.scratch-low.yaml", help="hyperparameters path")
     parser.add_argument("--epochs", type=int, default=300, help="total training epochs")
@@ -587,7 +587,7 @@ def parse_opt(known=False):
     parser.add_argument("--bucket", type=str, default="", help="gsutil bucket")
     parser.add_argument("--cache", type=str, nargs="?", const="ram", help="image --cache ram/disk")
     parser.add_argument("--image-weights", action="store_true", help="use weighted image selection for training")
-    parser.add_argument("--device", default="3", help="cuda device, i.e. 0 or 0,1,2,3 or cpu")
+    parser.add_argument("--device", default="0", help="cuda device, i.e. 0 or 0,1,2,3 or cpu")
     parser.add_argument("--multi-scale", action="store_true", help="vary img-size +/- 50%%")
     parser.add_argument("--single-cls", action="store_true", help="train multi-class data as single-class")
     parser.add_argument("--optimizer", type=str, choices=["SGD", "Adam", "AdamW"], default="SGD", help="optimizer")

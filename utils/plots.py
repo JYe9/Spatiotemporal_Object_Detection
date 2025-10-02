@@ -170,7 +170,15 @@ def plot_images(images, targets, paths=None, fname="images.jpg", names=None):
             break
         x, y = int(w * (i // ns)), int(h * (i % ns))  # block origin
         im = im.transpose(1, 2, 0)
-        mosaic[y : y + h, x : x + w, :] = im[..., 3:-1]  # Plot only channels 4-6 (second frame) - Frame Pair & Difference
+
+        if im.shape[2] >= 9:  # three RGB frames + diffs (11 channels)
+            display = im[..., 6:9]  # plot last RGB frame
+        elif im.shape[2] >= 6:  # two RGB frames + diff (7 channels)
+            display = im[..., 3:6]  # plot second RGB frame
+        else:
+            display = im[..., :3]  # fallback to first RGB frame
+
+        mosaic[y : y + h, x : x + w, :] = display
 
     # Resize (optional)
     scale = max_size / ns / max(h, w)

@@ -62,6 +62,94 @@ from utils.torch_utils import torch_distributed_zero_first
 HELP_URL = "See https://docs.ultralytics.com/yolov5/tutorials/train_custom_data"
 IMG_FORMATS = "bmp", "dng", "jpeg", "jpg", "mpo", "png", "tif", "tiff", "webp", "pfm"  # include image suffixes
 VID_FORMATS = "asf", "avi", "gif", "m4v", "mkv", "mov", "mp4", "mpeg", "mpg", "ts", "wmv"  # include video suffixes
+SPATIOTEMPORAL_FRAMES = 3  # number of consecutive frames per sample
+SPATIOTEMPORAL_DIFFS = SPATIOTEMPORAL_FRAMES - 1  # grayscale frame differences per sample
+SPATIOTEMPORAL_CHANNELS = SPATIOTEMPORAL_FRAMES * 3 + SPATIOTEMPORAL_DIFFS  # total stacked channels
+GRAY_TRANSFORM = torchvision.transforms.Grayscale()
+
+
+def _sequence_trim(length):
+    """Returns the total number of complete frame sequences and the trimmed length."""
+    sequences = length // SPATIOTEMPORAL_FRAMES
+    trimmed = sequences * SPATIOTEMPORAL_FRAMES
+    return sequences, trimmed
+
+
+def _prepare_sequence_files(files, prefix=""):
+    """Sorts, trims, and groups image file paths into fixed-length sequences."""
+    if not files:
+        raise ValueError(f"{prefix}No images found")
+
+    files = sorted(files, key=lambda x: [int(s) if s.isdigit() else s for s in re.split(r"(\d+)", x)])
+
+    sequences, trimmed = _sequence_trim(len(files))
+    if sequences == 0:
+        raise ValueError(
+            f"{prefix}At least {SPATIOTEMPORAL_FRAMES} frame(s) required to build a sequence, got {len(files)}"
+        )
+
+    if trimmed != len(files):
+        LOGGER.warning(
+            "%s%d image(s) discarded to form complete %d-frame sequences",
+            prefix,
+            len(files) - trimmed,
+            SPATIOTEMPORAL_FRAMES,
+        )
+        files = files[:trimmed]
+
+    grouped = [files[i : i + SPATIOTEMPORAL_FRAMES] for i in range(0, len(files), SPATIOTEMPORAL_FRAMES)]
+    random.shuffle(grouped)
+    flattened = [image for seq in grouped for image in seq]
+    return flattened, grouped
+
+
+def preprocess_frame_to_tensor(frame, img_size, stride, auto=True, transform=None):
+    """Resizes and converts a BGR frame to a contiguous torch tensor in RGB CHW format."""
+    if transform is not None:
+        processed = transform(frame)
+        if isinstance(processed, torch.Tensor):
+            tensor = processed.contiguous()
+        else:
+            tensor = torch.from_numpy(processed)
+        return tensor
+
+    processed = letterbox(frame, img_size, stride=stride, auto=auto)[0]
+    processed = processed.transpose((2, 0, 1))[::-1]  # BGR -> RGB, HWC -> CHW
+    processed = np.ascontiguousarray(processed)
+    return torch.from_numpy(processed)
+
+
+def stack_frame_tensors_with_diffs(frame_tensors):
+    """Concatenates RGB frame tensors and absolute grayscale differences between consecutive frames."""
+    stacked_frames, stacked_diffs = [], []
+    for idx, tensor in enumerate(frame_tensors):
+        tensor = tensor.contiguous()
+        stacked_frames.append(tensor)
+        if idx:
+            prev_gray = GRAY_TRANSFORM(stacked_frames[idx - 1])
+            curr_gray = GRAY_TRANSFORM(tensor)
+            stacked_diffs.append(torch.abs(torch.sub(prev_gray, curr_gray)))
+    return torch.cat(stacked_frames + stacked_diffs, 0)
+
+
+def preprocess_frame_to_tensor(frame, img_size, stride, auto=True):
+    """Resizes and converts a BGR frame to a contiguous torch tensor in RGB CHW format."""
+    processed = letterbox(frame, img_size, stride=stride, auto=auto)[0]
+    processed = processed.transpose((2, 0, 1))[::-1]  # BGR -> RGB, HWC -> CHW
+    processed = np.ascontiguousarray(processed)
+    return torch.from_numpy(processed)
+
+
+def stack_frame_tensors_with_diffs(frame_tensors):
+    """Concatenates RGB frame tensors and absolute grayscale differences between consecutive frames."""
+    stacked_frames, stacked_diffs = [], []
+    for idx, tensor in enumerate(frame_tensors):
+        stacked_frames.append(tensor)
+        if idx:
+            prev_gray = GRAY_TRANSFORM(stacked_frames[idx - 1])
+            curr_gray = GRAY_TRANSFORM(tensor)
+            stacked_diffs.append(torch.abs(torch.sub(prev_gray, curr_gray)))
+    return torch.cat(stacked_frames + stacked_diffs, 0)
 LOCAL_RANK = int(os.getenv("LOCAL_RANK", -1))  # https://pytorch.org/docs/stable/elastic/run.html
 RANK = int(os.getenv("RANK", -1))
 WORLD_SIZE = int(os.getenv("WORLD_SIZE", 1))
@@ -339,23 +427,21 @@ class LoadImages:
         videos = [x for x in files if x.split(".")[-1].lower() in VID_FORMATS]
         ni, nv = len(images), len(videos)
 
+        if nv:
+            raise NotImplementedError("Video sources are not supported for spatiotemporal inference sequences")
+
+        images, _ = _prepare_sequence_files(images)
+
         self.img_size = img_size
         self.stride = stride
-        self.files = images + videos
-        self.nf = ni + nv  # number of files
-        self.video_flag = [False] * ni + [True] * nv
+        self.files = images
+        self.nf = len(images)
+        self.video_flag = [False] * self.nf
         self.mode = "image"
         self.auto = auto
         self.transforms = transforms  # optional
         self.vid_stride = vid_stride  # video frame-rate stride
-        if any(videos):
-            self._new_video(videos[0])  # new video
-        else:
-            self.cap = None
-        assert self.nf > 0, (
-            f"No images or videos found in {p}. "
-            f"Supported formats are:\nimages: {IMG_FORMATS}\nvideos: {VID_FORMATS}"
-        )
+        self.cap = None
 
     def __iter__(self):
         """Initializes iterator by resetting count and returns the iterator object itself."""
@@ -366,65 +452,24 @@ class LoadImages:
         """Advances to the next file in the dataset, raising StopIteration if at the end."""
         if self.count == self.nf:
             raise StopIteration
-        path = self.files[self.count + 1]  # +1 for correct filename - Frame Pair & Difference
+        frame_seq, raw_last = self._load_frame_sequence(self.count)
+        self.count += SPATIOTEMPORAL_FRAMES
+        path = self.files[min(self.count, self.nf) - 1]
+        s = f"image {min(self.count, self.nf)}/{self.nf} {path}: "
+        stacked = stack_frame_tensors_with_diffs(frame_seq)
+        return path, stacked.numpy(), raw_last, self.cap, s
 
-        if self.video_flag[self.count]:
-            # Read video
-            self.mode = "video"
-            for _ in range(self.vid_stride):
-                self.cap.grab()
-            ret_val, im0 = self.cap.retrieve()
-            while not ret_val:
-                self.count += 1
-                self.cap.release()
-                if self.count == self.nf:  # last video
-                    raise StopIteration
-                path = self.files[self.count]
-                self._new_video(path)
-                ret_val, im0 = self.cap.read()
-
-            self.frame += 1
-            # im0 = self._cv2_rotate(im0)  # for use if cv2 autorotation is False
-            s = f"video {self.count + 1}/{self.nf} ({self.frame}/{self.frames}) {path}: "
-
-        else:
-            # Read image
-            # Load images for inference - Frame Pair & Difference
-            self.count += 1
-            im01 = cv2.imread(path)  # BGR
-            assert im01 is not None, f"Image Not Found {path}"
-            s1 = f"image {self.count}/{self.nf} {path}: "
-
-            self.count += 1
-            im02 = cv2.imread(path)  # BGR
-            assert im02 is not None, f"Image Not Found {path}"
-            s = f"image {self.count}/{self.nf} {path}: "
-
-        if self.transforms:
-            im1 = self.transforms(im01)  # transforms
-            im2 = self.transforms(im02)
-            im = np.concatenate((im1, im2), axis=0)
-
-        else:
-            im1 = letterbox(im01, self.img_size, stride=self.stride, auto=self.auto)[0]  # padded resize
-            im1 = im1.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
-            im1 = np.ascontiguousarray(im1)  # contiguous
-            im1 = torch.from_numpy(im1)
-            im1_grey = torchvision.transforms.Grayscale()(im1)
-
-            im2 = letterbox(im02, self.img_size, stride=self.stride, auto=self.auto)[0]  # padded resize
-            im2 = im2.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
-            im2 = np.ascontiguousarray(im2)  # contiguous
-            im2 = torch.from_numpy(im2)
-            im2_grey = torchvision.transforms.Grayscale()(im2)
-
-            frame_diff_gray = torch.sub(im1_grey, im2_grey)
-            frame_diff_gray = torch.abs(frame_diff_gray)
-
-            im = torch.cat([im1, im2, frame_diff_gray], 0)
-            im = im.numpy()
-
-        return path, im, im02, self.cap, s
+    def _load_frame_sequence(self, index):
+        """Loads a consecutive sequence of frames starting at `index`."""
+        tensors = []
+        raw_frames = []
+        for offset in range(SPATIOTEMPORAL_FRAMES):
+            frame_path = self.files[index + offset]
+            frame = cv2.imread(frame_path)
+            assert frame is not None, f"Image Not Found {frame_path}"
+            raw_frames.append(frame)
+            tensors.append(preprocess_frame_to_tensor(frame, self.img_size, self.stride, auto=self.auto))
+        return tensors, raw_frames[-1]
 
     def _new_video(self, path):
         """Initializes a new video capture object with path, frame count adjusted by stride, and orientation
@@ -605,20 +650,7 @@ class LoadImagesAndLabels(Dataset):
                 else:
                     raise FileNotFoundError(f"{prefix}{p} does not exist")
             self.im_files = sorted(x.replace("/", os.sep) for x in f if x.split(".")[-1].lower() in IMG_FORMATS)
-            # self.img_files = sorted([x for x in f if x.suffix[1:].lower() in IMG_FORMATS])  # pathlib
-
-            # Sort images in order - Frame Pair & Difference
-            self.im_files = sorted(self.im_files,
-                                   key=lambda x: [int(s) if s.isdigit() else s for s in re.split(r"(\d+)", x)])
-
-            # Group the image files into pairs
-            image_pairs = [(self.im_files[i], self.im_files[i + 1]) for i in range(0, len(self.im_files), 2)]
-            # Shuffle the list of images while retaining pairs of frames together
-            random.shuffle(image_pairs)
-            # Flatten the shuffled pairs back into a single list
-            self.im_files = [image for pair in image_pairs for image in pair]
-
-            assert self.im_files, f"{prefix}No images found"
+            self.im_files, _ = _prepare_sequence_files(self.im_files, prefix)
         except Exception as e:
             raise Exception(f"{prefix}Error loading data from {path}: {e}\n{HELP_URL}") from e
 
@@ -791,7 +823,7 @@ class LoadImagesAndLabels(Dataset):
 
     def __len__(self):
         """Returns the number of images in the dataset."""
-        return len(self.im_files) // 2  # Half the number of images - Frame Pair & Difference
+        return len(self.im_files) // SPATIOTEMPORAL_FRAMES
 
     # def __iter__(self):
     #     self.count = -1
@@ -877,21 +909,23 @@ class LoadImagesAndLabels(Dataset):
         return torch.from_numpy(img), labels_out, self.im_files[index], shapes
 
     def __getitem__(self, index):
-        # Get every 2 frames, find their greyscale frame diff and concat to 7 channels - Frame Pair & Difference
-        first_frame, _, first_frame_name, _ = LoadImagesAndLabels.getitem_pre(self, 2 * index)
-        first_frame_gray = torchvision.transforms.Grayscale()(first_frame)
+        # Gather consecutive frames and build spatiotemporal stack
+        frame_tensors = []
+        labels_out = None
+        shapes = None
+        names = []
+        base = SPATIOTEMPORAL_FRAMES * index
+        for offset in range(SPATIOTEMPORAL_FRAMES):
+            frame_tensor, labels, frame_name, frame_shapes = LoadImagesAndLabels.getitem_pre(self, base + offset)
+            frame_tensors.append(frame_tensor)
+            names.append(frame_name)
+            if labels_out is None:
+                labels_out = labels
+                shapes = frame_shapes
 
-        second_frame, labels_out, second_frame_name, shapes = LoadImagesAndLabels.getitem_pre(self, 2 * index + 1)
-        second_frame_gray = torchvision.transforms.Grayscale()(second_frame)
+        img = stack_frame_tensors_with_diffs(frame_tensors)
 
-        # print(f"Concatenated {first_frame_name} and {second_frame_name}")
-
-        frame_diff_gray = torch.sub(first_frame_gray, second_frame_gray)
-        frame_diff_gray = torch.abs(frame_diff_gray)
-
-        img = torch.cat([first_frame, second_frame, frame_diff_gray], 0)
-
-        return img, labels_out, second_frame_name, shapes
+        return img, labels_out, names[-1], shapes
 
     def load_image(self, i):
         """
